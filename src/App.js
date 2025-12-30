@@ -339,11 +339,26 @@ function App() {
         
         console.log('[Progressive Summarization] Adding indicators to', summarizedIds.size, 'messages');
         
+        // Debug: Check what message elements exist
+        const allMessageDivs = document.querySelectorAll('#chat .mes');
+        console.log('[Progressive Summarization] Found', allMessageDivs.length, 'message divs in DOM');
+        
+        if (allMessageDivs.length > 0) {
+            console.log('[Progressive Summarization] First message div:', allMessageDivs[0]);
+            console.log('[Progressive Summarization] First message attributes:', {
+                mesid: allMessageDivs[0].getAttribute('mesid'),
+                id: allMessageDivs[0].id,
+                className: allMessageDivs[0].className
+            });
+        }
+        
         // Find all message elements and add indicators
         let indicatorsAdded = 0;
         chat.forEach((msg, index) => {
-            if (msg.id && summarizedIds.has(msg.id)) {
-                console.log('[Progressive Summarization] Message', index, 'with ID', msg.id, 'should have indicator');
+            const msgId = msg.id || msg.mes_id || msg.index || index;
+            
+            if (summarizedIds.has(msgId)) {
+                console.log('[Progressive Summarization] Message', index, 'with ID', msgId, 'should have indicator');
                 
                 // Try different selectors to find the message div
                 let messageDiv = document.querySelector(`#chat .mes[mesid="${index}"]`);
