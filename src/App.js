@@ -209,7 +209,7 @@ function App() {
     };
 
     // Save chat-specific data to chatMetadata
-    const saveChatData = async () => {
+    const saveChatData = async (dataOverride = null) => {
         const chatId = getCurrentChatId();
         
         console.log('[Progressive Summarization] Saving chat data for ID:', chatId);
@@ -225,11 +225,18 @@ function App() {
             context.chatMetadata = {};
         }
         
-        context.chatMetadata.progressiveSummarization = {
-            summaries,
+        // Use provided data or current state
+        const dataToSave = dataOverride || {
+            summaries: summaries,
             summarizedMessageIds: Array.from(summarizedMessageIds),
-            currentTokenCount,
+            currentTokenCount: currentTokenCount
         };
+        
+        console.log('[Progressive Summarization] Saving summaries:', dataToSave.summaries.length);
+        console.log('[Progressive Summarization] Saving message IDs:', dataToSave.summarizedMessageIds.length);
+        
+        // Save to chatMetadata (per-chat storage)
+        context.chatMetadata.progressiveSummarization = dataToSave;
         
         const { saveMetadata } = SillyTavern.getContext();
         if (saveMetadata) {
@@ -305,61 +312,91 @@ function App() {
 
     // Add visual indicators to summarized messages
     const addSummarizedIndicators = () => {
+        console.log('[Progressive Summarization] addSummarizedIndicators called');
+        
         const context = SillyTavern.getContext();
-        if (!context.extensionSettings?.progressiveSummarization?.isEnabled) return;
+        if (!context.extensionSettings?.progressiveSummarization?.isEnabled) {
+            console.log('[Progressive Summarization] Extension not enabled, skipping indicators');
+            return;
+        }
         
         const chatData = context.chatMetadata?.progressiveSummarization;
-        if (!chatData) return;
+        if (!chatData) {
+            console.log('[Progressive Summarization] No chat data found');
+            return;
+        }
         
         const summarizedIds = new Set(chatData.summarizedMessageIds || []);
         const chat = context.chat;
         
-        if (!chat || summarizedIds.size === 0) return;
+        console.log('[Progressive Summarization] Chat has', chat?.length, 'messages');
+        console.log('[Progressive Summarization] Summarized IDs:', Array.from(summarizedIds));
+        
+        if (!chat || summarizedIds.size === 0) {
+            console.log('[Progressive Summarization] No chat or no summarized messages');
+            return;
+        }
         
         console.log('[Progressive Summarization] Adding indicators to', summarizedIds.size, 'messages');
         
         // Find all message elements and add indicators
+        let indicatorsAdded = 0;
         chat.forEach((msg, index) => {
             if (msg.id && summarizedIds.has(msg.id)) {
+                console.log('[Progressive Summarization] Message', index, 'with ID', msg.id, 'should have indicator');
+                
                 // Try different selectors to find the message div
                 let messageDiv = document.querySelector(`#chat .mes[mesid="${index}"]`);
+                
+                console.log('[Progressive Summarization] Found messageDiv by mesid:', !!messageDiv);
                 
                 // Alternative: try finding by data attribute or other means
                 if (!messageDiv) {
                     const allMessages = document.querySelectorAll('#chat .mes');
                     messageDiv = allMessages[index];
+                    console.log('[Progressive Summarization] Found messageDiv by index:', !!messageDiv);
                 }
                 
-                if (messageDiv && !messageDiv.querySelector('.summarized-indicator')) {
-                    // Create indicator
-                    const indicator = document.createElement('div');
-                    indicator.className = 'summarized-indicator';
-                    indicator.innerHTML = '<i class="fa-solid fa-compress" title="This message has been summarized"></i>';
-                    indicator.style.cssText = `
-                        position: absolute;
-                        top: 5px;
-                        right: 35px;
-                        background: rgba(100, 150, 255, 0.3);
-                        padding: 4px 8px;
-                        border-radius: 4px;
-                        font-size: 0.85em;
-                        color: #6496ff;
-                        z-index: 10;
-                        pointer-events: none;
-                    `;
+                if (messageDiv) {
+                    const alreadyHasIndicator = messageDiv.querySelector('.summarized-indicator');
+                    console.log('[Progressive Summarization] Already has indicator:', !!alreadyHasIndicator);
                     
-                    // Make the message slightly transparent
-                    messageDiv.style.opacity = '0.7';
-                    
-                    // Ensure parent has relative positioning
-                    const mesBlock = messageDiv.querySelector('.mes_block') || messageDiv;
-                    mesBlock.style.position = 'relative';
-                    mesBlock.appendChild(indicator);
-                    
-                    console.log('[Progressive Summarization] Added indicator to message', index, msg.id);
+                    if (!alreadyHasIndicator) {
+                        // Create indicator
+                        const indicator = document.createElement('div');
+                        indicator.className = 'summarized-indicator';
+                        indicator.innerHTML = '<i class="fa-solid fa-compress" title="This message has been summarized"></i>';
+                        indicator.style.cssText = `
+                            position: absolute;
+                            top: 5px;
+                            right: 35px;
+                            background: rgba(100, 150, 255, 0.3);
+                            padding: 4px 8px;
+                            border-radius: 4px;
+                            font-size: 0.85em;
+                            color: #6496ff;
+                            z-index: 10;
+                            pointer-events: none;
+                        `;
+                        
+                        // Make the message slightly transparent
+                        messageDiv.style.opacity = '0.7';
+                        
+                        // Ensure parent has relative positioning
+                        const mesBlock = messageDiv.querySelector('.mes_block') || messageDiv;
+                        mesBlock.style.position = 'relative';
+                        mesBlock.appendChild(indicator);
+                        
+                        indicatorsAdded++;
+                        console.log('[Progressive Summarization] Added indicator to message', index, msg.id);
+                    }
+                } else {
+                    console.log('[Progressive Summarization] Could not find messageDiv for index', index);
                 }
             }
         });
+        
+        console.log('[Progressive Summarization] Total indicators added:', indicatorsAdded);
     };
 
     // Handle new messages
@@ -383,19 +420,31 @@ function App() {
         if (!chat || chat.length === 0) return;
 
         // Get unsummarized messages
-        const unsummarizedMessages = chat.filter(msg => !summarizedMessageIds.has(msg.id));
+        const unsummarizedMessages = chat.filter(msg => !summarizedMessageIds.has(msg.id || msg.mes_id || msg.index));
         
-        // Calculate total tokens in unsummarized messages
+        // Calculate total tokens in unsummarized messages and collect messages up to threshold
         let totalTokens = 0;
-        unsummarizedMessages.forEach(msg => {
-            totalTokens += estimateTokens(msg.mes || '');
-        });
+        const messagesToSummarize = [];
+        
+        for (const msg of unsummarizedMessages) {
+            const msgTokens = estimateTokens(msg.mes || '');
+            
+            // Check if adding this message would exceed threshold
+            if (totalTokens + msgTokens > tokenThreshold && messagesToSummarize.length > 0) {
+                // We've reached the threshold, stop here
+                break;
+            }
+            
+            totalTokens += msgTokens;
+            messagesToSummarize.push(msg);
+        }
 
         setCurrentTokenCount(totalTokens);
 
-        // If threshold reached, trigger summarization
-        if (totalTokens >= tokenThreshold && unsummarizedMessages.length > 0) {
-            performSummarization(unsummarizedMessages);
+        // If threshold reached, trigger summarization for only the messages we collected
+        if (totalTokens >= tokenThreshold && messagesToSummarize.length > 0) {
+            console.log('[Progressive Summarization] Threshold reached. Summarizing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'unsummarized messages');
+            performSummarization(messagesToSummarize);
         }
     };
 
@@ -462,17 +511,48 @@ function App() {
             
             // Mark messages as summarized
             const newSummarizedIds = new Set(summarizedMessageIds);
-            messagesToSummarize.forEach(msg => {
-                if (msg.id) newSummarizedIds.add(msg.id);
+            
+            console.log('[Progressive Summarization] Analyzing messages to summarize:');
+            messagesToSummarize.forEach((msg, idx) => {
+                console.log(`[Progressive Summarization] Message ${idx}:`, {
+                    id: msg.id,
+                    mes_id: msg.mes_id,
+                    index: msg.index,
+                    send_date: msg.send_date,
+                    hasId: !!msg.id,
+                    keys: Object.keys(msg).join(', ')
+                });
+                
+                // Try different ID fields
+                const msgId = msg.id || msg.mes_id || msg.index || idx;
+                if (msgId !== undefined) {
+                    console.log('[Progressive Summarization] Marking message as summarized with ID:', msgId);
+                    newSummarizedIds.add(msgId);
+                }
             });
+            
+            console.log('[Progressive Summarization] Total summarized messages:', newSummarizedIds.size);
+            
             setSummarizedMessageIds(newSummarizedIds);
             setCurrentTokenCount(0);
             
             setStatus(`Summarized ${messagesToSummarize.length} messages`);
             setTimeout(() => setStatus('Ready'), 3000);
             
-            // Save after summarization (this saves both global settings and chat data)
-            await saveSettings();
+            // Save after summarization with the NEW values directly
+            const newSummaries = [...summaries, newSummary];
+            await saveChatData({
+                summaries: newSummaries,
+                summarizedMessageIds: Array.from(newSummarizedIds),
+                currentTokenCount: 0
+            });
+            
+            // Also save global settings
+            const context = SillyTavern.getContext();
+            const { saveSettingsDebounced } = context;
+            if (saveSettingsDebounced) {
+                saveSettingsDebounced();
+            }
             
             // Add visual indicators to newly summarized messages
             setTimeout(() => addSummarizedIndicators(), 500);
@@ -487,12 +567,40 @@ function App() {
     const handleManualSummarize = () => {
         const context = SillyTavern.getContext();
         const chat = context.chat;
-        const unsummarizedMessages = chat.filter(msg => !summarizedMessageIds.has(msg.id));
         
-        if (unsummarizedMessages.length > 0) {
-            performSummarization(unsummarizedMessages);
-        } else {
+        // Get unsummarized messages (using multiple possible ID fields)
+        const unsummarizedMessages = chat.filter(msg => {
+            const msgId = msg.id || msg.mes_id || msg.index;
+            return !summarizedMessageIds.has(msgId);
+        });
+        
+        if (unsummarizedMessages.length === 0) {
             alert('No new messages to summarize');
+            return;
+        }
+        
+        // Collect messages up to the token threshold
+        let totalTokens = 0;
+        const messagesToSummarize = [];
+        
+        for (const msg of unsummarizedMessages) {
+            const msgTokens = estimateTokens(msg.mes || '');
+            
+            // For manual summarization, we can be more flexible
+            // Only stop if we've collected at least some messages and would exceed threshold
+            if (totalTokens + msgTokens > tokenThreshold && messagesToSummarize.length > 0) {
+                break;
+            }
+            
+            totalTokens += msgTokens;
+            messagesToSummarize.push(msg);
+        }
+        
+        if (messagesToSummarize.length > 0) {
+            console.log('[Progressive Summarization] Manual summarize: processing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'messages');
+            performSummarization(messagesToSummarize);
+        } else {
+            alert('No messages meet the threshold for summarization');
         }
     };
 
