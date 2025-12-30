@@ -257,13 +257,20 @@ function App() {
             // Only intercept if extension is enabled
             const context = SillyTavern.getContext();
             const settings = context.extensionSettings?.progressiveSummarization;
-            if (!settings?.isEnabled) return;
+            if (!settings?.isEnabled) {
+                console.log('[Progressive Summarization] Interceptor: extension not enabled');
+                return;
+            }
             
             // Get chat-specific data from chatMetadata
             const chatData = context.chatMetadata?.progressiveSummarization;
-            if (!chatData) return;
+            if (!chatData) {
+                console.log('[Progressive Summarization] Interceptor: no chat data');
+                return;
+            }
             
             const summarizedIds = new Set(chatData.summarizedMessageIds || []);
+            console.log('[Progressive Summarization] Interceptor: summarized IDs:', Array.from(summarizedIds));
             
             // If we have summaries, filter out summarized messages
             if (summarizedIds.size > 0 && chatData.summaries?.length > 0) {
@@ -272,7 +279,12 @@ function App() {
                 
                 // Filter in reverse to maintain array integrity
                 for (let i = chat.length - 1; i >= 0; i--) {
-                    if (chat[i]?.id && summarizedIds.has(chat[i].id)) {
+                    const msg = chat[i];
+                    // Use same ID logic as everywhere else
+                    const msgId = msg?.id || msg?.mes_id || msg?.index || i;
+                    
+                    if (summarizedIds.has(msgId)) {
+                        console.log(`[Progressive Summarization] Interceptor: removing message at index ${i} with ID ${msgId}`);
                         chat.splice(i, 1);
                     }
                 }
@@ -305,7 +317,7 @@ function App() {
                     chat.splice(insertIndex, 0, summaryMessage);
                 }
                 
-                console.log(`[Progressive Summarization] Filtered ${removedCount} summarized messages, injected ${chatData.summaries.length} summaries`);
+                console.log(`[Progressive Summarization] Interceptor: filtered ${removedCount} summarized messages, injected ${chatData.summaries.length} summaries`);
             }
         };
     };
