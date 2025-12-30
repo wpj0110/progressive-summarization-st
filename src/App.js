@@ -446,8 +446,14 @@ function App() {
         
         if (!chat || chat.length === 0) return;
 
-        // Get unsummarized messages
-        const unsummarizedMessages = chat.filter(msg => !summarizedMessageIds.has(msg.id || msg.mes_id || msg.index));
+        // Get unsummarized messages (excluding hidden messages)
+        const unsummarizedMessages = chat.filter(msg => {
+            const msgId = msg.id || msg.mes_id || msg.index;
+            const isNotSummarized = !summarizedMessageIds.has(msgId);
+            const isNotHidden = !msg.is_system && !msg.extra?.hidden;
+            
+            return isNotSummarized && isNotHidden;
+        });
         
         // Calculate total tokens in unsummarized messages and collect messages up to threshold
         let totalTokens = 0;
@@ -536,23 +542,29 @@ function App() {
             
             setSummaries(prev => [...prev, newSummary]);
             
-            // Mark messages as summarized
+            // Mark messages as summarized - need to find their indices in the original chat
             const newSummarizedIds = new Set(summarizedMessageIds);
+            const ctx = SillyTavern.getContext();
+            const chat = ctx.chat;
             
             console.log('[Progressive Summarization] Analyzing messages to summarize:');
             messagesToSummarize.forEach((msg, idx) => {
+                // Find this message's index in the original chat array
+                const chatIndex = chat.findIndex(m => m === msg);
+                
                 console.log(`[Progressive Summarization] Message ${idx}:`, {
                     id: msg.id,
                     mes_id: msg.mes_id,
                     index: msg.index,
+                    chatIndex: chatIndex,
                     send_date: msg.send_date,
                     hasId: !!msg.id,
                     keys: Object.keys(msg).join(', ')
                 });
                 
-                // Try different ID fields
-                const msgId = msg.id || msg.mes_id || msg.index || idx;
-                if (msgId !== undefined) {
+                // Use the chat index as the ID since messages don't have IDs
+                const msgId = msg.id || msg.mes_id || msg.index || chatIndex;
+                if (msgId !== undefined && msgId !== -1) {
                     console.log('[Progressive Summarization] Marking message as summarized with ID:', msgId);
                     newSummarizedIds.add(msgId);
                 }
@@ -595,11 +607,32 @@ function App() {
         const context = SillyTavern.getContext();
         const chat = context.chat;
         
-        // Get unsummarized messages (using multiple possible ID fields)
+        console.log('[Progressive Summarization] Total messages in chat:', chat.length);
+        
+        // Get unsummarized messages (using multiple possible ID fields, excluding hidden)
         const unsummarizedMessages = chat.filter(msg => {
             const msgId = msg.id || msg.mes_id || msg.index;
-            return !summarizedMessageIds.has(msgId);
+            const isNotSummarized = !summarizedMessageIds.has(msgId);
+            const isNotSystem = !msg.is_system;
+            const isNotHidden = !msg.extra?.hidden;
+            
+            // Log filtering decisions
+            if (!isNotSummarized || !isNotSystem || !isNotHidden) {
+                console.log('[Progressive Summarization] Filtering message:', {
+                    msgId,
+                    isNotSummarized,
+                    isNotSystem,
+                    isNotHidden,
+                    is_system: msg.is_system,
+                    extra_hidden: msg.extra?.hidden,
+                    mes: msg.mes?.substring(0, 50)
+                });
+            }
+            
+            return isNotSummarized && isNotSystem && isNotHidden;
         });
+        
+        console.log('[Progressive Summarization] After filtering: unsummarized=', unsummarizedMessages.length, 'total=', chat.length);
         
         if (unsummarizedMessages.length === 0) {
             alert('No new messages to summarize');
@@ -624,7 +657,7 @@ function App() {
         }
         
         if (messagesToSummarize.length > 0) {
-            console.log('[Progressive Summarization] Manual summarize: processing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'messages');
+            console.log('[Progressive Summarization] Manual summarize: processing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'messages (excluding hidden)');
             performSummarization(messagesToSummarize);
         } else {
             alert('No messages meet the threshold for summarization');
