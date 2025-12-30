@@ -3,9 +3,9 @@ import React, { useState, useEffect } from 'react';
 
 function App() {
     // State management (similar to Angular component properties)
-    const [tokenThreshold, setTokenThreshold] = useState(1000);
+    const [messageThreshold, setMessageThreshold] = useState(20);
     const [isEnabled, setIsEnabled] = useState(false);
-    const [currentTokenCount, setCurrentTokenCount] = useState(0);
+    const [currentMessageCount, setCurrentMessageCount] = useState(0);
     const [summaries, setSummaries] = useState([]);
     const [summarizedMessageIds, setSummarizedMessageIds] = useState(new Set());
     const [status, setStatus] = useState('Ready');
@@ -29,7 +29,7 @@ function App() {
             console.log('[Progressive Summarization] No chat ID available yet, skipping load');
             setSummaries([]);
             setSummarizedMessageIds(new Set());
-            setCurrentTokenCount(0);
+            setCurrentMessageCount(0);
             return;
         }
         
@@ -39,7 +39,7 @@ function App() {
         const chatData = context.chatMetadata?.progressiveSummarization || {};
         setSummaries(chatData.summaries || []);
         setSummarizedMessageIds(new Set(chatData.summarizedMessageIds || []));
-        setCurrentTokenCount(chatData.currentTokenCount || 0);
+        setCurrentMessageCount(chatData.currentMessageCount || 0);
         
         console.log('[Progressive Summarization] Loaded summaries:', chatData.summaries?.length || 0);
         console.log('[Progressive Summarization] Loaded message IDs:', chatData.summarizedMessageIds?.length || 0);
@@ -146,7 +146,7 @@ function App() {
     // Load settings from extension storage (global settings only)
     const loadSettings = () => {
         const settings = SillyTavern.getContext().extensionSettings?.progressiveSummarization || {};
-        setTokenThreshold(settings.tokenThreshold || 1000);
+        setMessageThreshold(settings.messageThreshold || 20);
         setIsEnabled(settings.isEnabled || false);
     };
 
@@ -160,7 +160,7 @@ function App() {
             console.log('[Progressive Summarization] No chat ID available yet, skipping load');
             setSummaries([]);
             setSummarizedMessageIds(new Set());
-            setCurrentTokenCount(0);
+            setCurrentMessageCount(0);
             return;
         }
         
@@ -170,13 +170,11 @@ function App() {
         const chatData = context.chatMetadata?.progressiveSummarization || {};
         setSummaries(chatData.summaries || []);
         setSummarizedMessageIds(new Set(chatData.summarizedMessageIds || []));
-        setCurrentTokenCount(chatData.currentTokenCount || 0);
+        setCurrentMessageCount(chatData.currentMessageCount || 0);
         
         console.log('[Progressive Summarization] Loaded summaries:', chatData.summaries?.length || 0);
         console.log('[Progressive Summarization] Loaded message IDs:', chatData.summarizedMessageIds?.length || 0);
         
-        // Add visual indicators to summarized messages
-        setTimeout(addSummarizedIndicators, 100);
         // Add visual indicators to summarized messages
         setTimeout(addSummarizedIndicators, 100);
     };
@@ -194,7 +192,7 @@ function App() {
         }
         
         context.extensionSettings.progressiveSummarization = {
-            tokenThreshold,
+            messageThreshold,
             isEnabled,
         };
         
@@ -229,7 +227,7 @@ function App() {
         const dataToSave = dataOverride || {
             summaries: summaries,
             summarizedMessageIds: Array.from(summarizedMessageIds),
-            currentTokenCount: currentTokenCount
+            currentMessageCount: currentMessageCount
         };
         
         console.log('[Progressive Summarization] Saving summaries:', dataToSave.summaries.length);
@@ -446,37 +444,22 @@ function App() {
         
         if (!chat || chat.length === 0) return;
 
-        // Get unsummarized messages (excluding hidden messages)
+        // Get unsummarized messages (excluding system and hidden messages)
         const unsummarizedMessages = chat.filter(msg => {
             const msgId = msg.id || msg.mes_id || msg.index;
             const isNotSummarized = !summarizedMessageIds.has(msgId);
-            const isNotHidden = !msg.is_system && !msg.extra?.hidden;
+            const isNotSystem = !msg.is_system;
+            const isNotHidden = !msg.extra?.hidden;
             
-            return isNotSummarized && isNotHidden;
+            return isNotSummarized && isNotSystem && isNotHidden;
         });
         
-        // Calculate total tokens in unsummarized messages and collect messages up to threshold
-        let totalTokens = 0;
-        const messagesToSummarize = [];
-        
-        for (const msg of unsummarizedMessages) {
-            const msgTokens = estimateTokens(msg.mes || '');
-            
-            // Check if adding this message would exceed threshold
-            if (totalTokens + msgTokens > tokenThreshold && messagesToSummarize.length > 0) {
-                // We've reached the threshold, stop here
-                break;
-            }
-            
-            totalTokens += msgTokens;
-            messagesToSummarize.push(msg);
-        }
+        setCurrentMessageCount(unsummarizedMessages.length);
 
-        setCurrentTokenCount(totalTokens);
-
-        // If threshold reached, trigger summarization for only the messages we collected
-        if (totalTokens >= tokenThreshold && messagesToSummarize.length > 0) {
-            console.log('[Progressive Summarization] Threshold reached. Summarizing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'unsummarized messages');
+        // If threshold reached, collect exactly messageThreshold messages and summarize
+        if (unsummarizedMessages.length >= messageThreshold) {
+            const messagesToSummarize = unsummarizedMessages.slice(0, messageThreshold);
+            console.log('[Progressive Summarization] Threshold reached. Summarizing', messagesToSummarize.length, 'messages');
             performSummarization(messagesToSummarize);
         }
     };
@@ -573,7 +556,7 @@ function App() {
             console.log('[Progressive Summarization] Total summarized messages:', newSummarizedIds.size);
             
             setSummarizedMessageIds(newSummarizedIds);
-            setCurrentTokenCount(0);
+            setCurrentMessageCount(0);
             
             setStatus(`Summarized ${messagesToSummarize.length} messages`);
             setTimeout(() => setStatus('Ready'), 3000);
@@ -583,7 +566,7 @@ function App() {
             await saveChatData({
                 summaries: newSummaries,
                 summarizedMessageIds: Array.from(newSummarizedIds),
-                currentTokenCount: 0
+                currentMessageCount: 0
             });
             
             // Also save global settings
@@ -639,29 +622,11 @@ function App() {
             return;
         }
         
-        // Collect messages up to the token threshold
-        let totalTokens = 0;
-        const messagesToSummarize = [];
+        // For manual summarization, take up to messageThreshold messages
+        const messagesToSummarize = unsummarizedMessages.slice(0, messageThreshold);
         
-        for (const msg of unsummarizedMessages) {
-            const msgTokens = estimateTokens(msg.mes || '');
-            
-            // For manual summarization, we can be more flexible
-            // Only stop if we've collected at least some messages and would exceed threshold
-            if (totalTokens + msgTokens > tokenThreshold && messagesToSummarize.length > 0) {
-                break;
-            }
-            
-            totalTokens += msgTokens;
-            messagesToSummarize.push(msg);
-        }
-        
-        if (messagesToSummarize.length > 0) {
-            console.log('[Progressive Summarization] Manual summarize: processing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'messages (excluding hidden)');
-            performSummarization(messagesToSummarize);
-        } else {
-            alert('No messages meet the threshold for summarization');
-        }
+        console.log('[Progressive Summarization] Manual summarize: processing', messagesToSummarize.length, 'of', unsummarizedMessages.length, 'messages (excluding hidden)');
+        performSummarization(messagesToSummarize);
     };
 
     // Clear all summaries
@@ -669,7 +634,7 @@ function App() {
         if (confirm('Are you sure you want to clear all summaries for this chat?')) {
             setSummaries([]);
             setSummarizedMessageIds(new Set());
-            setCurrentTokenCount(0);
+            setCurrentMessageCount(0);
             await saveChatData();
             setStatus('Summaries cleared');
             setTimeout(() => setStatus('Ready'), 2000);
@@ -705,29 +670,38 @@ function App() {
                         </label>
                     </div>
 
-                    {/* Token Threshold Setting */}
+                    {/* Message Threshold Setting */}
                     <div className="margin-top-10">
-                        <label htmlFor="token-threshold">
-                            <b>Token Threshold:</b>
+                        <label htmlFor="message-threshold">
+                            <b>Message Threshold:</b>
                         </label>
                         <input
-                            id="token-threshold"
+                            id="message-threshold"
                             type="number"
                             className="text_pole"
-                            value={tokenThreshold}
-                            onChange={(e) => setTokenThreshold(parseInt(e.target.value) || 1000)}
-                            min="100"
-                            step="100"
+                            value={messageThreshold}
+                            onChange={(e) => setMessageThreshold(parseInt(e.target.value) || 20)}
+                            min="5"
+                            step="5"
                         />
                         <small className="notes">
-                            Summarize messages every X tokens (approximate)
+                            Summarize every X messages
                         </small>
                     </div>
 
                     {/* Current Status */}
                     <div className="margin-top-10">
-                        <div><b>Status:</b> {status}</div>
-                        <div><b>Current tokens:</b> {currentTokenCount} / {tokenThreshold}</div>
+                        <label>
+                            <b>Status:</b> {status}
+                        </label>
+                        <br />
+                        <small className="notes">
+                            Unsummarized messages: {currentMessageCount} / {messageThreshold}
+                        </small>
+                    </div>
+
+                    {/* Summaries List */}
+                    <div className="margin-top-10">
                         <div><b>Total summaries:</b> {summaries.length}</div>
                         <div><b>Messages summarized:</b> {summarizedMessageIds.size}</div>
                     </div>
