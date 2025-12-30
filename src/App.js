@@ -18,34 +18,129 @@ function App() {
         }
         return null;
     };
+    
+    // Reload chat data (used by event handlers)
+    const reloadChatData = () => {
+        console.log('[Progressive Summarization] Reloading chat data...');
+        const chatId = getCurrentChatId();
+        console.log('[Progressive Summarization] Loading chat data for ID:', chatId);
+        
+        if (!chatId) {
+            console.log('[Progressive Summarization] No chat ID available yet, skipping load');
+            setSummaries([]);
+            setSummarizedMessageIds(new Set());
+            setCurrentTokenCount(0);
+            return;
+        }
+        
+        const context = SillyTavern.getContext();
+        
+        // Load from chatMetadata (per-chat storage)
+        const chatData = context.chatMetadata?.progressiveSummarization || {};
+        setSummaries(chatData.summaries || []);
+        setSummarizedMessageIds(new Set(chatData.summarizedMessageIds || []));
+        setCurrentTokenCount(chatData.currentTokenCount || 0);
+        
+        console.log('[Progressive Summarization] Loaded summaries:', chatData.summaries?.length || 0);
+        console.log('[Progressive Summarization] Loaded message IDs:', chatData.summarizedMessageIds?.length || 0);
+        
+        // Add visual indicators to summarized messages
+        setTimeout(addSummarizedIndicators, 100);
+    };
 
     // Load settings when component mounts (similar to ngOnInit)
     useEffect(() => {
+        console.log('[Progressive Summarization] Component mounted');
+        console.log('[Progressive Summarization] window.eventSource available:', !!window.eventSource);
+        console.log('[Progressive Summarization] Checking SillyTavern context...');
+        
+        const context = SillyTavern.getContext();
+        console.log('[Progressive Summarization] context.eventSource available:', !!context.eventSource);
+        console.log('[Progressive Summarization] context.eventTypes:', context.eventTypes);
+        console.log('[Progressive Summarization] context.event_types:', context.event_types);
+        
+        // Log all available event type keys that might be related to chat changes
+        if (context.eventTypes) {
+            const chatRelatedEvents = Object.keys(context.eventTypes).filter(key => 
+                key.includes('CHAT') || key.includes('CHARACTER') || key.includes('GROUP')
+            );
+            console.log('[Progressive Summarization] Chat-related events:', chatRelatedEvents);
+            console.log('[Progressive Summarization] All event types:', Object.keys(context.eventTypes));
+        }
+        
         loadSettings();
         loadChatData();
         
         // Register the global prompt interceptor
         registerPromptInterceptor();
         
-        // Register event listeners for message events
-        if (window.eventSource) {
-            window.eventSource.on('MESSAGE_SENT', handleMessageSent);
-            window.eventSource.on('MESSAGE_RECEIVED', handleMessageReceived);
-            window.eventSource.on('CHARACTER_MESSAGE_RENDERED', addSummarizedIndicators);
-            window.eventSource.on('USER_MESSAGE_RENDERED', addSummarizedIndicators);
-            window.eventSource.on('CHAT_CHANGED', handleChatChanged);
-        }
-
-        // Cleanup on unmount (similar to ngOnDestroy)
-        return () => {
-            if (window.eventSource) {
-                window.eventSource.removeListener('MESSAGE_SENT', handleMessageSent);
-                window.eventSource.removeListener('MESSAGE_RECEIVED', handleMessageReceived);
-                window.eventSource.removeListener('CHARACTER_MESSAGE_RENDERED', addSummarizedIndicators);
-                window.eventSource.removeListener('USER_MESSAGE_RENDERED', addSummarizedIndicators);
-                window.eventSource.removeListener('CHAT_CHANGED', handleChatChanged);
+        // Use eventSource from context if available
+        const eventSource = context.eventSource || window.eventSource;
+        
+        if (eventSource) {
+            console.log('[Progressive Summarization] Registering event listeners with eventSource');
+            
+            eventSource.on('MESSAGE_SENT', handleMessageSent);
+            eventSource.on('MESSAGE_RECEIVED', handleMessageReceived);
+            eventSource.on('CHARACTER_MESSAGE_RENDERED', addSummarizedIndicators);
+            eventSource.on('USER_MESSAGE_RENDERED', addSummarizedIndicators);
+            
+            // Try using the event type constants from context
+            const eventTypes = context.eventTypes || context.event_types;
+            if (eventTypes) {
+                // CHAT_CHANGED - fires when chat switches
+                if (eventTypes.CHAT_CHANGED) {
+                    console.log('[Progressive Summarization] Registering CHAT_CHANGED:', eventTypes.CHAT_CHANGED);
+                    eventSource.on(eventTypes.CHAT_CHANGED, () => {
+                        console.log('[Progressive Summarization] CHAT_CHANGED event fired');
+                        setTimeout(() => reloadChatData(), 100);
+                    });
+                }
+                
+                // CHARACTER_PAGE_LOADED - fires when character page loads
+                if (eventTypes.CHARACTER_PAGE_LOADED) {
+                    console.log('[Progressive Summarization] Registering CHARACTER_PAGE_LOADED:', eventTypes.CHARACTER_PAGE_LOADED);
+                    eventSource.on(eventTypes.CHARACTER_PAGE_LOADED, () => {
+                        console.log('[Progressive Summarization] CHARACTER_PAGE_LOADED event fired');
+                        setTimeout(() => reloadChatData(), 100);
+                    });
+                }
+                
+                // CHAT_CREATED - fires when a new chat is created
+                if (eventTypes.CHAT_CREATED) {
+                    console.log('[Progressive Summarization] Registering CHAT_CREATED:', eventTypes.CHAT_CREATED);
+                    eventSource.on(eventTypes.CHAT_CREATED, () => {
+                        console.log('[Progressive Summarization] CHAT_CREATED event fired');
+                        setTimeout(() => reloadChatData(), 100);
+                    });
+                }
             }
-        };
+            
+            // Cleanup on unmount
+            return () => {
+                eventSource.removeListener('MESSAGE_SENT', handleMessageSent);
+                eventSource.removeListener('MESSAGE_RECEIVED', handleMessageReceived);
+                eventSource.removeListener('CHARACTER_MESSAGE_RENDERED', addSummarizedIndicators);
+                eventSource.removeListener('USER_MESSAGE_RENDERED', addSummarizedIndicators);
+                eventSource.removeListener('CHAT_CHANGED');
+                eventSource.removeListener('chatSelected');
+                eventSource.removeListener('CHARACTER_SELECTED');
+            };
+        } else {
+            console.warn('[Progressive Summarization] No eventSource found! Events will not work.');
+            // Try polling as fallback
+            let lastChatId = getCurrentChatId();
+            const pollInterval = setInterval(() => {
+                const currentChatId = getCurrentChatId();
+                if (currentChatId && currentChatId !== lastChatId) {
+                    console.log('[Progressive Summarization] Chat changed detected via polling:', lastChatId, '->', currentChatId);
+                    lastChatId = currentChatId;
+                    reloadChatData();
+                }
+            }, 1000);
+            
+            return () => clearInterval(pollInterval);
+        }
     }, []);
 
     // Load settings from extension storage (global settings only)
@@ -84,12 +179,6 @@ function App() {
         setTimeout(addSummarizedIndicators, 100);
         // Add visual indicators to summarized messages
         setTimeout(addSummarizedIndicators, 100);
-    };
-
-    // Handle chat changed event
-    const handleChatChanged = () => {
-        console.log('[Progressive Summarization] Chat changed, reloading data');
-        loadChatData();
     };
 
     // Save settings to extension storage
