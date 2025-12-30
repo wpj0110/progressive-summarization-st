@@ -10,14 +10,30 @@ function App() {
     const [summarizedMessageIds, setSummarizedMessageIds] = useState(new Set());
     const [status, setStatus] = useState('Ready');
 
+    // Helper function to get current chat ID
+    const getCurrentChatId = () => {
+        const context = SillyTavern.getContext();
+        if (typeof context.getCurrentChatId === 'function') {
+            return context.getCurrentChatId();
+        }
+        return null;
+    };
+
     // Load settings when component mounts (similar to ngOnInit)
     useEffect(() => {
         loadSettings();
+        loadChatData();
+        
+        // Register the global prompt interceptor
+        registerPromptInterceptor();
         
         // Register event listeners for message events
         if (window.eventSource) {
             window.eventSource.on('MESSAGE_SENT', handleMessageSent);
             window.eventSource.on('MESSAGE_RECEIVED', handleMessageReceived);
+            window.eventSource.on('CHARACTER_MESSAGE_RENDERED', addSummarizedIndicators);
+            window.eventSource.on('USER_MESSAGE_RENDERED', addSummarizedIndicators);
+            window.eventSource.on('CHAT_CHANGED', handleChatChanged);
         }
 
         // Cleanup on unmount (similar to ngOnDestroy)
@@ -25,23 +41,62 @@ function App() {
             if (window.eventSource) {
                 window.eventSource.removeListener('MESSAGE_SENT', handleMessageSent);
                 window.eventSource.removeListener('MESSAGE_RECEIVED', handleMessageReceived);
+                window.eventSource.removeListener('CHARACTER_MESSAGE_RENDERED', addSummarizedIndicators);
+                window.eventSource.removeListener('USER_MESSAGE_RENDERED', addSummarizedIndicators);
+                window.eventSource.removeListener('CHAT_CHANGED', handleChatChanged);
             }
         };
     }, []);
 
-    // Load settings from extension storage
+    // Load settings from extension storage (global settings only)
     const loadSettings = () => {
         const settings = SillyTavern.getContext().extensionSettings?.progressiveSummarization || {};
         setTokenThreshold(settings.tokenThreshold || 1000);
         setIsEnabled(settings.isEnabled || false);
-        setSummaries(settings.summaries || []);
-        setSummarizedMessageIds(new Set(settings.summarizedMessageIds || []));
-        setCurrentTokenCount(settings.currentTokenCount || 0);
+    };
+
+    // Load chat-specific data from chatMetadata
+    const loadChatData = () => {
+        const chatId = getCurrentChatId();
+        
+        console.log('[Progressive Summarization] Loading chat data for ID:', chatId);
+        
+        if (!chatId) {
+            console.log('[Progressive Summarization] No chat ID available yet, skipping load');
+            setSummaries([]);
+            setSummarizedMessageIds(new Set());
+            setCurrentTokenCount(0);
+            return;
+        }
+        
+        const context = SillyTavern.getContext();
+        
+        // Load from chatMetadata (per-chat storage)
+        const chatData = context.chatMetadata?.progressiveSummarization || {};
+        setSummaries(chatData.summaries || []);
+        setSummarizedMessageIds(new Set(chatData.summarizedMessageIds || []));
+        setCurrentTokenCount(chatData.currentTokenCount || 0);
+        
+        console.log('[Progressive Summarization] Loaded summaries:', chatData.summaries?.length || 0);
+        console.log('[Progressive Summarization] Loaded message IDs:', chatData.summarizedMessageIds?.length || 0);
+        
+        // Add visual indicators to summarized messages
+        setTimeout(addSummarizedIndicators, 100);
+        // Add visual indicators to summarized messages
+        setTimeout(addSummarizedIndicators, 100);
+    };
+
+    // Handle chat changed event
+    const handleChatChanged = () => {
+        console.log('[Progressive Summarization] Chat changed, reloading data');
+        loadChatData();
     };
 
     // Save settings to extension storage
-    const saveSettings = () => {
+    const saveSettings = async () => {
         const context = SillyTavern.getContext();
+        
+        // Save global settings
         if (!context.extensionSettings) {
             context.extensionSettings = {};
         }
@@ -52,22 +107,170 @@ function App() {
         context.extensionSettings.progressiveSummarization = {
             tokenThreshold,
             isEnabled,
-            summaries,
-            summarizedMessageIds: Array.from(summarizedMessageIds),
-            currentTokenCount
         };
         
-        // Use the official saveSettingsDebounced from getContext
         const { saveSettingsDebounced } = SillyTavern.getContext();
         saveSettingsDebounced();
+        
+        // Save chat-specific data to chatMetadata
+        await saveChatData();
         
         setStatus('Settings saved');
         setTimeout(() => setStatus('Ready'), 2000);
     };
 
+    // Save chat-specific data to chatMetadata
+    const saveChatData = async () => {
+        const chatId = getCurrentChatId();
+        
+        console.log('[Progressive Summarization] Saving chat data for ID:', chatId);
+        
+        if (!chatId) {
+            console.log('[Progressive Summarization] No chat ID available, skipping save');
+            return;
+        }
+        
+        const context = SillyTavern.getContext();
+        
+        if (!context.chatMetadata) {
+            context.chatMetadata = {};
+        }
+        
+        context.chatMetadata.progressiveSummarization = {
+            summaries,
+            summarizedMessageIds: Array.from(summarizedMessageIds),
+            currentTokenCount,
+        };
+        
+        const { saveMetadata } = SillyTavern.getContext();
+        if (saveMetadata) {
+            await saveMetadata();
+            console.log('[Progressive Summarization] Saved successfully');
+        }
+    };
+
     // Estimate token count (rough approximation: 1 token ≈ 4 characters)
     const estimateTokens = (text) => {
         return Math.ceil(text.length / 4);
+    };
+
+    // Register the prompt interceptor to filter out summarized messages
+    const registerPromptInterceptor = () => {
+        // Define the interceptor function globally
+        globalThis.progressiveSummarizationInterceptor = async (chat, contextSize, abort, type) => {
+            // Only intercept if extension is enabled
+            const context = SillyTavern.getContext();
+            const settings = context.extensionSettings?.progressiveSummarization;
+            if (!settings?.isEnabled) return;
+            
+            // Get chat-specific data from chatMetadata
+            const chatData = context.chatMetadata?.progressiveSummarization;
+            if (!chatData) return;
+            
+            const summarizedIds = new Set(chatData.summarizedMessageIds || []);
+            
+            // If we have summaries, filter out summarized messages
+            if (summarizedIds.size > 0 && chatData.summaries?.length > 0) {
+                // Remove summarized messages from the chat array
+                const originalLength = chat.length;
+                
+                // Filter in reverse to maintain array integrity
+                for (let i = chat.length - 1; i >= 0; i--) {
+                    if (chat[i]?.id && summarizedIds.has(chat[i].id)) {
+                        chat.splice(i, 1);
+                    }
+                }
+                
+                const removedCount = originalLength - chat.length;
+                
+                // Inject summaries at the beginning
+                if (chatData.summaries.length > 0 && chat.length > 0) {
+                    // Create a system message with all summaries
+                    const summaryText = chatData.summaries
+                        .map((s, i) => `[Summary ${i + 1}]: ${s.text}`)
+                        .join('\n\n');
+                    
+                    const summaryMessage = {
+                        is_user: false,
+                        is_system: true,
+                        name: 'Conversation Summary',
+                        mes: summaryText,
+                        send_date: Date.now(),
+                        extra: {
+                            type: 'narrator',
+                        }
+                    };
+                    
+                    // Insert at the beginning (after any existing system messages)
+                    let insertIndex = 0;
+                    while (insertIndex < chat.length && chat[insertIndex]?.is_system) {
+                        insertIndex++;
+                    }
+                    chat.splice(insertIndex, 0, summaryMessage);
+                }
+                
+                console.log(`[Progressive Summarization] Filtered ${removedCount} summarized messages, injected ${chatData.summaries.length} summaries`);
+            }
+        };
+    };
+
+    // Add visual indicators to summarized messages
+    const addSummarizedIndicators = () => {
+        const context = SillyTavern.getContext();
+        if (!context.extensionSettings?.progressiveSummarization?.isEnabled) return;
+        
+        const chatData = context.chatMetadata?.progressiveSummarization;
+        if (!chatData) return;
+        
+        const summarizedIds = new Set(chatData.summarizedMessageIds || []);
+        const chat = context.chat;
+        
+        if (!chat || summarizedIds.size === 0) return;
+        
+        console.log('[Progressive Summarization] Adding indicators to', summarizedIds.size, 'messages');
+        
+        // Find all message elements and add indicators
+        chat.forEach((msg, index) => {
+            if (msg.id && summarizedIds.has(msg.id)) {
+                // Try different selectors to find the message div
+                let messageDiv = document.querySelector(`#chat .mes[mesid="${index}"]`);
+                
+                // Alternative: try finding by data attribute or other means
+                if (!messageDiv) {
+                    const allMessages = document.querySelectorAll('#chat .mes');
+                    messageDiv = allMessages[index];
+                }
+                
+                if (messageDiv && !messageDiv.querySelector('.summarized-indicator')) {
+                    // Create indicator
+                    const indicator = document.createElement('div');
+                    indicator.className = 'summarized-indicator';
+                    indicator.innerHTML = '<i class="fa-solid fa-compress" title="This message has been summarized"></i>';
+                    indicator.style.cssText = `
+                        position: absolute;
+                        top: 5px;
+                        right: 35px;
+                        background: rgba(100, 150, 255, 0.3);
+                        padding: 4px 8px;
+                        border-radius: 4px;
+                        font-size: 0.85em;
+                        color: #6496ff;
+                        z-index: 10;
+                        pointer-events: none;
+                    `;
+                    
+                    // Make the message slightly transparent
+                    messageDiv.style.opacity = '0.7';
+                    
+                    // Ensure parent has relative positioning
+                    const mesBlock = messageDiv.querySelector('.mes_block') || messageDiv;
+                    mesBlock.style.position = 'relative';
+                    mesBlock.appendChild(indicator);
+                    
+                    console.log('[Progressive Summarization] Added indicator to message', index, msg.id);
+                }
+            }
+        });
     };
 
     // Handle new messages
@@ -134,7 +337,7 @@ function App() {
             
             summaryPrompt += '\nGenerate a whole entire summary of what happened in the entire story, sectioning them by chapters. Only create chapters on sections where there are no summary yet. Be very generous with the paragraphs, details, and responses.';
             summaryPrompt += '\nPrevious chapters, if exists, will give clues on how the story has been.';
-            summaryPrompt += '\nAt the end of the summary, have a separate section for key highlights, such as mentioning how Tobi loves Lyraenne\'s body and vice versa.';
+            summaryPrompt += '\nAt the end of the summary, have a separate section for key highlights in bullet points.';
             summaryPrompt += '\nNever be afraid to be in detail and explicit.';
             summaryPrompt += '\nGoal response count: 500 to 1000 words';
             summaryPrompt += '\nIf summaries and chapters already exist, continue on top of it.';
@@ -179,8 +382,11 @@ function App() {
             setStatus(`Summarized ${messagesToSummarize.length} messages`);
             setTimeout(() => setStatus('Ready'), 3000);
             
-            // Save after summarization
-            saveSettings();
+            // Save after summarization (this saves both global settings and chat data)
+            await saveSettings();
+            
+            // Add visual indicators to newly summarized messages
+            setTimeout(() => addSummarizedIndicators(), 500);
         } catch (error) {
             console.error('Summarization error:', error);
             setStatus('Error during summarization');
@@ -202,14 +408,18 @@ function App() {
     };
 
     // Clear all summaries
-    const handleClearSummaries = () => {
-        if (confirm('Are you sure you want to clear all summaries?')) {
+    const handleClearSummaries = async () => {
+        if (confirm('Are you sure you want to clear all summaries for this chat?')) {
             setSummaries([]);
             setSummarizedMessageIds(new Set());
             setCurrentTokenCount(0);
-            saveSettings();
+            await saveChatData();
             setStatus('Summaries cleared');
             setTimeout(() => setStatus('Ready'), 2000);
+            
+            // Remove visual indicators
+            document.querySelectorAll('.summarized-indicator').forEach(el => el.remove());
+            document.querySelectorAll('#chat .mes').forEach(el => el.style.opacity = '1');
         }
     };
 

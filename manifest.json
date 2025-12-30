@@ -8,5 +8,6 @@
     "author": "wpj0110",
     "version": "1.0.0",
     "homePage": "https://github.com/wpj0110/progressive-summarization-st",
-    "auto_update": false
+    "auto_update": false,
+    "generate_interceptor": "progressiveSummarizationInterceptor"
 }
