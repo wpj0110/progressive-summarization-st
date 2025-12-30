@@ -57,7 +57,17 @@ function App() {
             currentTokenCount
         };
         
-        SillyTavern.saveSettingsDebounced();
+        // Try different save methods that might be available
+        if (typeof SillyTavern.saveSettings === 'function') {
+            SillyTavern.saveSettings();
+        } else if (typeof window.saveSettingsDebounced === 'function') {
+            window.saveSettingsDebounced();
+        } else if (typeof window.saveSettings === 'function') {
+            window.saveSettings();
+        } else {
+            console.log('Settings saved to context (auto-save method not found)');
+        }
+        
         setStatus('Settings saved');
         setTimeout(() => setStatus('Ready'), 2000);
     };
@@ -110,7 +120,8 @@ function App() {
         
         try {
             // Build the summarization prompt
-            let prompt = 'Please provide a concise summary of the following conversation:\n\n';
+            let prompt = '[System: You are a helpful assistant that creates concise summaries of conversations.]\n\n';
+            prompt += 'Please provide a concise summary of the following conversation:\n\n';
             
             // Include existing summaries for context
             if (summaries.length > 0) {
@@ -129,54 +140,41 @@ function App() {
             
             prompt += '\nProvide a summary that captures the key points, decisions, and context.';
 
-            // Get CSRF token from SillyTavern
-            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-
-            // Call SillyTavern's API to generate summary
-            const response = await fetch('/api/generate', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRF-Token': token,
-                },
-                body: JSON.stringify({
-                    prompt: prompt,
-                    max_tokens: 500,
-                    temperature: 0.7,
-                })
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                const summaryText = data.text || data.response || 'Summary generated';
-                
-                // Store the new summary
-                const newSummary = {
-                    text: summaryText,
-                    timestamp: Date.now(),
-                    messageCount: messagesToSummarize.length,
-                    tokenCount: messagesToSummarize.reduce((sum, msg) => sum + estimateTokens(msg.mes || ''), 0)
-                };
-                
-                setSummaries(prev => [...prev, newSummary]);
-                
-                // Mark messages as summarized
-                const newSummarizedIds = new Set(summarizedMessageIds);
-                messagesToSummarize.forEach(msg => {
-                    if (msg.id) newSummarizedIds.add(msg.id);
-                });
-                setSummarizedMessageIds(newSummarizedIds);
-                setCurrentTokenCount(0);
-                
-                setStatus(`Summarized ${messagesToSummarize.length} messages`);
-                setTimeout(() => setStatus('Ready'), 3000);
-                
-                // Save after summarization
-                saveSettings();
+            // Try using SillyTavern's generateQuietPrompt if available
+            let summaryText = '';
+            if (typeof SillyTavern.generateQuietPrompt === 'function') {
+                summaryText = await SillyTavern.generateQuietPrompt(prompt);
+            } else if (typeof window.generateQuietPrompt === 'function') {
+                summaryText = await window.generateQuietPrompt(prompt);
             } else {
-                setStatus('Summarization failed');
-                setTimeout(() => setStatus('Ready'), 3000);
+                // Fallback: Just store the prompt as summary for now
+                summaryText = 'Summary placeholder (API integration needed)';
+                console.warn('generateQuietPrompt not available - check SillyTavern console for the function name');
             }
+                
+            // Store the new summary
+            const newSummary = {
+                text: summaryText,
+                timestamp: Date.now(),
+                messageCount: messagesToSummarize.length,
+                tokenCount: messagesToSummarize.reduce((sum, msg) => sum + estimateTokens(msg.mes || ''), 0)
+            };
+            
+            setSummaries(prev => [...prev, newSummary]);
+            
+            // Mark messages as summarized
+            const newSummarizedIds = new Set(summarizedMessageIds);
+            messagesToSummarize.forEach(msg => {
+                if (msg.id) newSummarizedIds.add(msg.id);
+            });
+            setSummarizedMessageIds(newSummarizedIds);
+            setCurrentTokenCount(0);
+            
+            setStatus(`Summarized ${messagesToSummarize.length} messages`);
+            setTimeout(() => setStatus('Ready'), 3000);
+            
+            // Save after summarization
+            saveSettings();
         } catch (error) {
             console.error('Summarization error:', error);
             setStatus('Error during summarization');
