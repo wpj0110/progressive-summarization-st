@@ -1,12 +1,12 @@
 {
-    "display_name": "Template Extension",
+    "display_name": "Progressive Summarization",
     "loading_order": 1,
     "requires": [],
     "optional": [],
     "js": "dist/index.js",
     "css": "",
-    "author": "Cohee1207",
+    "author": "wpj0110",
     "version": "1.0.0",
-    "homePage": "https://github.com/Cohee1207/Extension-ReactTemplate",
-    "auto_update": true
+    "homePage": "https://github.com/wpj0110/progressive-summarization-st",
+    "auto_update": false
 }
