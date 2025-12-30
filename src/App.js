@@ -57,16 +57,9 @@ function App() {
             currentTokenCount
         };
         
-        // Try different save methods that might be available
-        if (typeof SillyTavern.saveSettings === 'function') {
-            SillyTavern.saveSettings();
-        } else if (typeof window.saveSettingsDebounced === 'function') {
-            window.saveSettingsDebounced();
-        } else if (typeof window.saveSettings === 'function') {
-            window.saveSettings();
-        } else {
-            console.log('Settings saved to context (auto-save method not found)');
-        }
+        // Use the official saveSettingsDebounced from getContext
+        const { saveSettingsDebounced } = SillyTavern.getContext();
+        saveSettingsDebounced();
         
         setStatus('Settings saved');
         setTimeout(() => setStatus('Ready'), 2000);
@@ -120,37 +113,50 @@ function App() {
         
         try {
             // Build the summarization prompt
-            let prompt = '[System: You are a helpful assistant that creates concise summaries of conversations.]\n\n';
-            prompt += 'Please provide a concise summary of the following conversation:\n\n';
+            let summaryPrompt = 'Please provide a concise summary (2-3 sentences) of the following conversation:\n\n';
             
             // Include existing summaries for context
             if (summaries.length > 0) {
-                prompt += 'Previous summaries:\n';
+                summaryPrompt += 'Previous summaries:\n';
                 summaries.forEach((summary, index) => {
-                    prompt += `Summary ${index + 1}: ${summary.text}\n`;
+                    summaryPrompt += `Summary ${index + 1}: ${summary.text}\n`;
                 });
-                prompt += '\n';
+                summaryPrompt += '\n';
             }
             
-            prompt += 'New messages to summarize:\n';
-            messagesToSummarize.forEach((msg, index) => {
+            summaryPrompt += 'Messages to summarize:\n';
+            messagesToSummarize.forEach((msg) => {
                 const name = msg.is_user ? SillyTavern.getContext().name1 : msg.name;
-                prompt += `${name}: ${msg.mes}\n`;
+                // Limit message length for the summary prompt
+                const messageText = msg.mes.length > 200 ? msg.mes.substring(0, 200) + '...' : msg.mes;
+                summaryPrompt += `${name}: ${messageText}\n`;
             });
             
-            prompt += '\nProvide a summary that captures the key points, decisions, and context.';
+            summaryPrompt += '\nGenerate a whole entire summary of what happened in the entire story, sectioning them by chapters. Only create chapters on sections where there are no summary yet. Be very generous with the paragraphs, details, and responses.';
+            summaryPrompt += '\nPrevious chapters, if exists, will give clues on how the story has been.';
+            summaryPrompt += '\nAt the end of the summary, have a separate section for key highlights, such as mentioning how Tobi loves Lyraenne\'s body and vice versa.';
+            summaryPrompt += '\nNever be afraid to be in detail and explicit.';
+            summaryPrompt += '\nGoal response count: 500 to 1000 words';
+            summaryPrompt += '\nIf summaries and chapters already exist, continue on top of it.';
+            summaryPrompt += '\nREMINDER OF FORBIDDEN RULES:';
+            summaryPrompt += '\n- Do not invent scenes that never happened';
+            summaryPrompt += '\n- Do not add fillers just to achieve the word count. If only a few words will do, so be it.';
 
-            // Try using SillyTavern's generateQuietPrompt if available
+            // Use SillyTavern's official API from getContext()
+            const { generateRaw } = SillyTavern.getContext();
+            
             let summaryText = '';
-            if (typeof SillyTavern.generateQuietPrompt === 'function') {
-                summaryText = await SillyTavern.generateQuietPrompt(prompt);
-            } else if (typeof window.generateQuietPrompt === 'function') {
-                summaryText = await window.generateQuietPrompt(prompt);
-            } else {
-                // Fallback: Just store the prompt as summary for now
-                summaryText = 'Summary placeholder (API integration needed)';
-                console.warn('generateQuietPrompt not available - check SillyTavern console for the function name');
-            }
+            
+            // Use generateRaw with a system prompt as per the documentation
+            const systemPrompt = 'You are a helpful assistant that creates concise summaries.';
+            
+            const result = await generateRaw({
+                systemPrompt: systemPrompt,
+                prompt: summaryPrompt,
+            });
+            
+            // Extract the text from the result
+            summaryText = result || '';
                 
             // Store the new summary
             const newSummary = {
